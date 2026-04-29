@@ -1,21 +1,22 @@
-# 🗄️ Instalación de PostgreSQL y Docker en el RAID
+# Instalación de PostgreSQL y Docker en el RAID
 
-> Esta guía asume que el SO ya está instalado y las particiones `/produccion` y `/desarrollo` ya están montadas dentro del arreglo RAID.
-> Verificar antes de comenzar:
-> ```bash
-> lsblk
-> df -vh
-> ```
+Esta guía asume que el SO ya está instalado y las particiones `/produccion` y `/desarrollo` ya están montadas dentro del arreglo RAID. Verificar antes de comenzar:
+
+```bash
+lsblk
+df -vh
+```
 
 ---
 
 ## 📋 Tabla de Contenidos
 
-1. [Configuración Inicial del Servidor](#1-configuración-inicial-del-servidor)
-2. [PostgreSQL en el RAID](#2-postgresql-en-el-raid)
-3. [Docker en el RAID](#3-docker-en-el-raid)
-4. [Contenedor de PostgreSQL](#4-contenedor-de-postgresql)
-5. [Contenedor de PgAdmin](#5-contenedor-de-pgadmin)
+1. Configuración Inicial del Servidor
+2. PostgreSQL en el RAID
+3. Docker en el RAID
+4. Verificación General
+5. Contenedor de PostgreSQL
+6. Contenedor de PgAdmin
 
 ---
 
@@ -45,7 +46,7 @@ apt install net-tools
 ifconfig
 ```
 
-> ⚠️ **Omitir `apt upgrade`** si así lo indica el enunciado.
+> ⚠️ Omitir `apt upgrade` si así lo indica el enunciado.
 
 ---
 
@@ -77,7 +78,7 @@ chown -R postgres:postgres /produccion
 sudo -u postgres /usr/lib/postgresql/16/bin/initdb -D /produccion/postgresql/16/main
 ```
 
-Si todo salió bien debe aparecer **Success** al final.
+Si todo salió bien debe aparecer `Success` al final.
 
 ### Redirigir PostgreSQL al RAID
 
@@ -106,6 +107,7 @@ sudo -u postgres psql -c "SHOW data_directory;"
 ```
 
 Debe mostrar:
+
 ```
 /produccion/postgresql/16/main
 ```
@@ -115,9 +117,6 @@ Debe mostrar:
 ```bash
 sudo -i -u postgres
 psql
-```
-
-```sql
 alter user postgres with password 'linux';
 ```
 
@@ -128,6 +127,7 @@ vim /etc/postgresql/16/main/postgresql.conf
 ```
 
 Modificar:
+
 ```
 listen_addresses = '*'
 ```
@@ -137,6 +137,7 @@ vim /etc/postgresql/16/main/pg_hba.conf
 ```
 
 Agregar al final:
+
 ```
 host    all    all    192.168.56.0/24    md5
 host    all    all    172.17.0.0/24      md5
@@ -196,11 +197,14 @@ service docker status
 ```bash
 systemctl stop docker
 systemctl stop containerd
+```
 
+```bash
 vim /etc/docker/daemon.json
 ```
 
 Escribir dentro:
+
 ```json
 {
   "data-root": "/desarrollo/docker"
@@ -209,25 +213,102 @@ Escribir dentro:
 
 Guardar con `Escape` → `:wq` → `Enter`.
 
+### ⚠️ Redirigir containerd al RAID (IMPORTANTE)
+
+> Sin este paso, containerd almacena las capas de imágenes en `/var/lib/containerd` dentro del disco del SO (sda3 de ~4GB), lo que causa el error **"no space left on device"** al hacer `docker pull` ya que el disco del SO tiene espacio muy limitado.
+
+Crear el directorio en el RAID:
+
+```bash
+mkdir -p /desarrollo/containerd
+```
+
+Editar la configuración de containerd:
+
+```bash
+vim /etc/containerd/config.toml
+```
+
+Localizar la línea que dice `#root = "/var/lib/containerd"` (línea 17 aproximadamente), **descomentarla y cambiar la ruta:**
+
+```toml
+root = "/desarrollo/containerd"
+```
+
+Guardar con `Escape` → `:wq` → `Enter`.
+
+Limpiar caché anterior para liberar espacio en el SO:
+
+```bash
+rm -rf /var/lib/containerd/*
+```
+
+### Iniciar los servicios
+
 ```bash
 systemctl start containerd
 systemctl start docker
 ```
 
-### Verificar que apunta al RAID ✅
+---
+
+## 4. Verificación General ✅
+
+Ejecutar todos estos comandos para confirmar que todo está correctamente configurado antes de continuar:
 
 ```bash
+# Estado del arreglo RAID
+cat /proc/mdstat
+sudo mdadm --detail /dev/md127
+```
+
+Resultado esperado:
+```
+State : clean
+Active Devices : 2
+Failed Devices : 0
+```
+
+```bash
+# Ver particiones y montajes
+lsblk
+df -vh
+```
+
+```bash
+# PostgreSQL apunta al RAID
+sudo -u postgres psql -c "SHOW data_directory;"
+```
+
+Debe mostrar: `/produccion/postgresql/16/main`
+
+```bash
+# Docker apunta al RAID
 docker info | grep "Docker Root Dir"
 ```
 
-Debe mostrar:
+Debe mostrar: `Docker Root Dir: /desarrollo/docker`
+
+```bash
+# Containerd apunta al RAID
+cat /etc/containerd/config.toml | grep root
 ```
-Docker Root Dir: /desarrollo/docker
+
+Debe mostrar: `root = "/desarrollo/containerd"`
+
+```bash
+# Espacio usado en cada partición del RAID
+du -sh /produccion/
+du -sh /desarrollo/
+
+# Limpiar residual de docker en el SO (si existe)
+du -sh /var/lib/docker/
+rm -rf /var/lib/docker/*
 ```
 
 ---
 
-## 4. Contenedor de PostgreSQL
+## 5. Contenedor de PostgreSQL
 
 ```bash
 docker pull postgres
@@ -239,14 +320,15 @@ docker run --name contenedor-psql -e POSTGRES_PASSWORD=linux -d -p 2022:5432 pos
 docker ps
 ```
 
-> ⚠️ `docker run` solo se ejecuta **una vez** (crea el contenedor). Para iniciarlo luego usar:
-> ```bash
-> docker start contenedor-psql
-> ```
+> ⚠️ `docker run` solo se ejecuta una vez (crea el contenedor). Para iniciarlo luego usar:
+
+```bash
+docker start contenedor-psql
+```
 
 ---
 
-## 5. Contenedor de PgAdmin
+## 6. Contenedor de PgAdmin
 
 ```bash
 docker run -d -p 8080:80 --name pgadmin-contenedor \
@@ -256,6 +338,7 @@ docker run -d -p 8080:80 --name pgadmin-contenedor \
 ```
 
 Acceder desde el navegador de Windows:
+
 ```
 http://IP-SERVIDOR:8080
 ```
@@ -264,6 +347,16 @@ http://IP-SERVIDOR:8080
 |-------|-------|
 | Usuario | correo definido en `PGADMIN_DEFAULT_EMAIL` |
 | Contraseña | definida en `PGADMIN_DEFAULT_PASSWORD` |
+
+---
+
+## 📝 Notas finales
+
+**Sobre los discos de diferente tamaño:**
+El uso de discos de 20 GB y 30 GB fue intencional para evidenciar que en RAID 1, el arreglo siempre se limita al disco de menor capacidad. Los 10 GB sobrantes del disco de 30 GB se desperdician. Si al momento de configurar el RAID fue necesario "recortar" el disco mayor para que funcionara, eso es equivalente al mismo comportamiento: en la práctica, el resultado es idéntico.
+
+**Sobre las particiones `/produccion` y `/desarrollo`:**
+Ambas particiones están dentro del arreglo RAID 1, por lo que todo lo almacenado en ellas — bases de datos de PostgreSQL, imágenes y contenedores de Docker — tiene redundancia automática. Si uno de los discos falla, el otro mantiene una copia exacta de toda la información.
 
 ---
 
